@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Camera Control</title>
+    <style>
+        body { text-align: center; }
+        img { border: 1px solid black; }
+        .button-container { margin-top: 20px; }
+        button { margin: 5px; }
+        #joystick { width: 200px; height: 200px; margin: auto; }
+    </style>
+</head>
+<body>
+    <h1>Camera Control</h1>
+    <div>
+        <img src="{{ url_for('video_feed') }}" id="video" width="640" height="480">
+    </div>
+    <div class="button-container">
+        <button onclick="sendKey('f1')">F1</button>
+        <button onclick="sendKey('f2')">F2</button>
+        <button onclick="sendKey('f4')">F4</button>
+        <button onclick="sendKey('f6')">F6</button>
+        <button onclick="sendKey('f7')">F7</button>
+        <button onclick="sendKey('f8')">F8</button>
+        <button onclick="sendKey('f9')">F9</button>
+        <button onclick="sendKey('q')">Quit</button>
+        <button onclick="sendKey('c')">Toggle Camera</button>
+        <button onclick="sendKey('p')">Toggle Code</button>
+        <button onclick="sendKey('t')">Toggle Overlay</button>
+    </div>
+    <div id="joystick"></div>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/nipplejs/0.9.0/nipplejs.min.js"></script>
+    <script>
+        function sendKey(key) {
+            fetch('/control/' + key);
+        }
+
+        var joystick = nipplejs.create({
+            zone: document.getElementById('joystick'),
+            mode: 'static',
+            position: { left: '50%', top: '50%' },
+            color: 'red'
+        });
+
+        joystick.on('move', function (evt, data) {
+            var direction = data.direction ? data.direction.angle : null;
+            if (direction === 'left') {
+                sendKey('f9');
+            } else if (direction === 'right') {
+                sendKey('f6');
+            } else if (direction === 'up') {
+                sendKey('f8');
+            } else if (direction === 'down') {
+                sendKey('f7');
+            }
+        });
+
+        joystick.on('end', function () {
+            sendKey('stop');
+        });
+    </script>
+</body>
+</html>
