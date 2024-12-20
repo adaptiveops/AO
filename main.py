@@ -33,6 +33,9 @@ import signal
 import tkinter as tk
 import queue
 
+# Additional Libraries for Self-Update
+import hashlib
+
 # Configure logging
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -769,6 +772,11 @@ def handle_action(action: str, command: str) -> None:
             speak(f"I encountered an unexpected error during the reboot: {e}")
             logger.error("Unexpected error during system reboot:", exc_info=True)
 
+    # Handle self-update command
+    elif action == "update script":
+        update_script()
+        return
+
 def process_command(command: str) -> None:
     global goodbye_detected, last_interaction_time
 
@@ -862,7 +870,7 @@ def process_command(command: str) -> None:
                       "stop autopilot", "stop auto", "deactivate autopilot", "deactivate auto"],
         "drive mode": ["start drive mode", "start drive", "activate drive mode", "activate drive",
                        "stop drive mode", "stop drive", "deactivate drive mode", "deactivate drive"],
-        "system update": ["update your system", "run a system update"],
+        "system update": ["update your system", "run a system update", "update script"],  # Added "update script"
         "system reboot": ["system reboot", "reboot system", "restart system", "system restart"],
         "voice command": ["start voice command", "start voice", "activate voice command", "activate voice",
                           "stop voice command", "stop voice", "deactivate voice command", "deactivate voice"],
@@ -894,6 +902,9 @@ def process_command(command: str) -> None:
             elif known_action == "set volume percentage":
                 set_volume_percentage(command)
                 return
+            elif known_action == "system update":
+                handle_action("update script", command)
+                return
             else:
                 handle_action(known_action, command)
                 return
@@ -902,6 +913,324 @@ def process_command(command: str) -> None:
     if response:
         speak(response)
         save_to_csv(command, response)
+
+def initialize_system() -> None:
+    try:
+        logger.info("Initializing AO system...")
+        process_state.register_process("system_init", {"status": ""})
+
+        subprocess.run(["pactl", "list", "sources"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        logger.info("Audio system initialized")
+
+        os.makedirs(os.path.join(BASE_DIR, 'conversations'), exist_ok=True)
+        os.makedirs(os.path.join(BASE_DIR, 'logs'), exist_ok=True)
+
+        try:
+            subprocess.run(["mpg123", "--version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            logger.info("Audio playback system verified")
+        except subprocess.CalledProcessError:
+            logger.error("mpg123 not found - audio playback may be unavailable")
+
+        process_state.update_process_status("system_init", "complete")
+        logger.info("System initialization complete")
+        
+    except Exception as e:
+        logger.error(f"Error during system initialization: {e}", exc_info=True)
+        process_state.update_process_status("system_init", "failed")
+        raise
+
+def cleanup_system() -> None:
+    try:
+        logger.info("Starting system cleanup...")
+        process_state.register_process("system_cleanup", {"status": ""})
+
+        active_processes = process_state.get_active_processes()
+        for proc_type, proc_info in active_processes.items():
+            if proc_info.pid:
+                try:
+                    os.kill(proc_info.pid, signal.SIGTERM)
+                    process_state.unregister_process(proc_type)
+                    logger.info(f"Terminated process: {proc_type}")
+                except ProcessLookupError:
+                    pass
+                except Exception as e:
+                    logger.error(f"Error terminating process {proc_type}: {e}")
+
+        if os.path.exists(output_file):
+            try:
+                os.remove(output_file)
+            except Exception as e:
+                logger.error(f"Error removing temporary audio file: {e}")
+
+        # Stop the speak worker
+        speak_queue.put(None)
+        speak_thread.join()
+
+        process_state.update_process_status("system_cleanup", "complete")
+        logger.info("System cleanup completed")
+
+    except Exception as e:
+        logger.error(f"Error during system cleanup: {e}", exc_info=True)
+        process_state.update_process_status("system_cleanup", "failed")
+
+def maintain_system() -> None:
+    try:
+        active_processes = process_state.get_active_processes()
+        current_time = time.time()
+        
+        for proc_type, proc_info in active_processes.items():
+            if proc_info.start_time and (current_time - proc_info.start_time) > 3600:
+                logger.warning(f"Found stale process: {proc_type}")
+                process_state.unregister_process(proc_type)
+
+        logger.info("Performing routine system maintenance")
+
+    except Exception as e:
+        logger.error(f"Error during system maintenance: {e}", exc_info=True)
+
+def health_check() -> bool:
+    try:
+        if not os.path.exists(output_file):
+            os.makedirs(os.path.dirname(output_file), exist_ok=True)
+
+        subprocess.run(["pactl", "list", "sources"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+        if len(process_state.get_active_processes()) > 10:
+            logger.warning("High number of active processes detected")
+
+        return True
+    except Exception as e:
+        logger.error(f"Health check failed: {e}", exc_info=True)
+        return False
+
+def update_script():
+    """
+    Handles the self-update process:
+    1. Backs up the current script.
+    2. Downloads the updated script from GitHub.
+    3. Validates the downloaded script for syntax errors.
+    4. Tests the updated script in a subprocess.
+    5. Reverts to the backup if any step fails.
+    6. Schedules a system restart to apply the update.
+    """
+    script_path = MAIN_SCRIPT_PATH
+    backup_path = "/home/ao/Desktop/AO/main_backup.py"
+    github_raw_url = "https://raw.githubusercontent.com/adaptiveops/AO/main/main.py"
+
+    try:
+        speak("Initiating self-update process.")
+        logger.info("Starting self-update process.")
+
+        # Step 1: Backup current script
+        shutil.copy(script_path, backup_path)
+        logger.info("Backup of the current script created.")
+
+        # Step 2: Download the updated script
+        response = requests.get(github_raw_url)
+        response.raise_for_status()  # Raise exception for HTTP errors
+        with open(script_path, "w") as file:
+            file.write(response.text)
+        logger.info("Downloaded the updated script from GitHub.")
+
+        # Optional: Verify the integrity of the downloaded script (e.g., using hash)
+        # This step can be implemented if a known hash is available.
+
+        # Step 3: Syntax Check
+        try:
+            with open(script_path, 'r') as file:
+                code = file.read()
+                compile(code, script_path, 'exec')
+            logger.info("Syntax check passed for the updated script.")
+        except SyntaxError as e:
+            logger.error(f"Syntax error in the updated script: {e}")
+            speak("Update failed due to syntax errors.")
+            # Revert to backup
+            shutil.copy(backup_path, script_path)
+            logger.info("Reverted to the backup script due to syntax errors.")
+            speak("Reverting to the previous version.")
+            return
+
+        # Step 4: Test Execution
+        test_process = subprocess.run(
+            ["python3", script_path, "--test"],
+            capture_output=True,
+            text=True
+        )
+        if test_process.returncode != 0:
+            logger.error(f"Test failed for the updated script: {test_process.stderr}")
+            speak("Update test failed.")
+            # Revert to backup
+            shutil.copy(backup_path, script_path)
+            logger.info("Reverted to the backup script due to test failure.")
+            speak("Reverting to the previous version.")
+            return
+
+        # Step 5: Schedule Restart to Activate Update
+        speak("Update successful. Restarting to apply changes.")
+        logger.info("Update validated successfully. Scheduling system restart.")
+
+        # Inform the user before restarting
+        threading.Thread(target=schedule_restart, daemon=True).start()
+
+    except requests.HTTPError as e:
+        logger.error(f"HTTP error during update: {e}")
+        speak("Update failed due to a network error.")
+        # Revert to backup
+        shutil.copy(backup_path, script_path)
+        logger.info("Reverted to the backup script due to network error.")
+    except Exception as e:
+        logger.error(f"Unexpected error during update: {e}", exc_info=True)
+        speak("An unexpected error occurred during the update.")
+        # Revert to backup
+        shutil.copy(backup_path, script_path)
+        logger.info("Reverted to the backup script due to unexpected error.")
+
+def schedule_restart():
+    """
+    Schedules a system restart to apply the updated script.
+    This function runs in a separate thread to avoid blocking.
+    """
+    try:
+        time.sleep(2)  # Short delay before restarting
+        logger.info("Restarting the system to apply updates.")
+        speak("Restarting now to apply the update.")
+        subprocess.run(["sudo", "reboot"], check=True)
+    except Exception as e:
+        logger.error(f"Failed to restart the system: {e}", exc_info=True)
+        speak("Failed to restart the system. Please restart manually.")
+        # Optional: Notify the user via email or another method
+
+def handle_action(action: str, command: str) -> None:
+    global standby_mode, current_player
+
+    SCAN_ACTIONS = {
+        "look forward": ("/home/ao/Desktop/AO/Skills/Scan/fs_run.py", "fs_run.py"),
+        "look right": ("/home/ao/Desktop/AO/Skills/Scan/rs_run.py", "rs_run.py"),
+        "look left": ("/home/ao/Desktop/AO/Skills/Scan/ls_run.py", "ls_run.py"),
+        "look up": ("/home/ao/Desktop/AO/Skills/Scan/as_run.py", "as_run.py"),
+        "scan the area": ("/home/ao/Desktop/AO/Skills/Scan/sc_run.py", "sc_run.py")
+    }
+
+    PROCESS_ACTIONS = {
+        "object detection": ("/home/ao/Desktop/AO/Skills/Object/od_run.py", "od_run.py"),
+        "facial recognition": ("/home/ao/Desktop/AO/Skills/Face/facerec.py", "facerec.py"),
+        "voice command": ("/home/ao/Desktop/AO/Skills/Voice_Drive/vservo.py", "vservo.py"),
+        "follow me": ("/home/ao/Desktop/AO/Skills/Follow/follow.py", "follow.py"),
+        "autopilot": ("/home/ao/Desktop/AO/Skills/Auto_Pilot/ap_run.py", "ap_run.py"),
+        "drive mode": ("/home/ao/Desktop/AO/Skills/Servos/s_run.py", "s_run.py")
+    }
+
+    PLAYLISTS = {
+        "mission": "https://www.pandora.com/playlist/PL:1407374982083884:112981814",
+        "christmas": "https://www.pandora.com/playlist/PL:1125900006224721:32484657"
+    }
+
+    if action in SCAN_ACTIONS:
+        script_path, process_name = SCAN_ACTIONS[action]
+        standby_duration = 60 if action == "scan the area" else 18
+        manage_process(f" {action}", script_path, process_name, duration=standby_duration)
+        return
+
+    if action in ["location data", "weather data"]:
+        script_path = "/home/ao/Desktop/AO/Skills/GPS/wps_run.py"
+        process_name = f"Retrieving {action}"
+        manage_process(process_name, script_path, process_name, duration=26)
+        return
+
+    if action in PROCESS_ACTIONS:
+        script_path, stop_script = PROCESS_ACTIONS[action]
+        if any(word in command for word in ["start", "activate"]):
+            process_name = action.capitalize()
+            manage_process(f" {process_name}", script_path, stop_script)
+        elif any(word in command for word in ["stop", "deactivate"]):
+            try:
+                subprocess.run(["pkill", "-f", stop_script], check=True)
+                process_state.unregister_process(action.capitalize())
+                speak(f" {action}.")
+                logger.info(f"{action.capitalize()} stopped.")
+            except subprocess.CalledProcessError:
+                speak(f"{action.capitalize()} is not running.")
+                logger.warning(f"{action.capitalize()} is not running.")
+            except Exception as e:
+                speak(f"I encountered an error while stopping {action}: {e}")
+                logger.error(f"Error stopping {action}:", exc_info=True)
+        return
+
+    if action == "play music":
+        manage_process("Playing music", "/home/ao/Desktop/AO/Skills/Youtube/m_run.py", "Music Player", duration=18)
+        current_player = "Music Player"
+        return
+
+    elif action == "stop music" and current_player == "Music Player":
+        try:
+            subprocess.run(["pkill", "-f", "yt.py"], check=True)
+            speak("I’ve stopped the music.")
+            logger.info("Music stopped.")
+            current_player = None
+        except subprocess.CalledProcessError:
+            speak("Music is not playing.")
+            logger.warning("Music is not playing.")
+        except Exception as e:
+            speak(f"I encountered an error while stopping music: {e}")
+            logger.error("Error stopping music:", exc_info=True)
+        return
+
+    for playlist_name, url in PLAYLISTS.items():
+        if action == f"play {playlist_name}":
+            speak(f"I’m starting the {playlist_name} playlist.")
+            try:
+                webbrowser.open(url)
+                logger.info(f"{playlist_name.capitalize()} playlist started in Pandora.")
+                current_player = "Pandora"
+            except Exception as e:
+                speak(f"I encountered an error while starting Pandora: {e}")
+                logger.error("Error starting Pandora:", exc_info=True)
+            return
+        elif action == f"stop {playlist_name}" and current_player == "Pandora":
+            speak(f"I’m stopping the {playlist_name} playlist.")
+            try:
+                subprocess.run(["pkill", "firefox"], check=True)
+                current_player = None
+                logger.info(f"{playlist_name.capitalize()} playlist stopped.")
+            except subprocess.CalledProcessError:
+                speak(f"The {playlist_name.capitalize()} playlist is not playing.")
+                logger.warning(f"{playlist_name.capitalize()} playlist is not playing.")
+            except Exception as e:
+                speak(f"I encountered an error while stopping Pandora: {e}")
+                logger.error("Error stopping Pandora:", exc_info=True)
+            return
+
+    if action == "system update":
+        speak("I’m updating my system.")
+        try:
+            subprocess.run(["python3", "/home/ao/Desktop/AO/Skills/Update/update.py"], check=True)
+            speak("System update completed successfully.")
+            logger.info("System update completed successfully.")
+        except subprocess.CalledProcessError:
+            speak("I encountered an error during the update.")
+            logger.error("Error during system update:", exc_info=True)
+        except Exception as e:
+            speak(f"I encountered an unexpected error during the update: {e}")
+            logger.error("Unexpected error during system update:", exc_info=True)
+        return
+
+    elif action == "system reboot":
+        speak("I’m rebooting my system.")
+        try:
+            subprocess.run(["python3", "/home/ao/Desktop/AO/Skills/Reboot/reboot.py"], check=True)
+            speak("System reboot initiated.")
+            logger.info("System reboot script executed successfully.")
+        except subprocess.CalledProcessError:
+            speak("I encountered an error during the reboot.")
+            logger.error("Error during system reboot:", exc_info=True)
+        except Exception as e:
+            speak(f"I encountered an unexpected error during the reboot: {e}")
+            logger.error("Unexpected error during system reboot:", exc_info=True)
+
+    # Handle self-update command
+    elif action == "update script":
+        update_script()
+        return
 
 def initialize_system() -> None:
     try:
@@ -1187,7 +1516,8 @@ def create_gui_main_window():
         ("System Reboot", "system reboot"),
         ("Go into Standby", "go into standby"),
         ("Wake Up", "wake up"),
-        ("Stop Talking", "stop_talking")
+        ("Stop Talking", "stop_talking"),
+        ("Update Script", "update script")  # Added button for updating script
     ]
 
     # Determine the number of columns based on desired layout
