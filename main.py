@@ -1,4 +1,4 @@
-#===============================================#
+#===============================================
 # Unit 1 Libraries, Variable Management
 #===============================================
 import time
@@ -40,7 +40,7 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 handler = RotatingFileHandler(
     os.path.join(os.path.dirname(os.path.abspath(__file__)), 'ao_assistant.log'),
-    maxBytes=5*1024*1024,  # 5 MB
+    maxBytes=5 * 1024 * 1024,  # 5 MB
     backupCount=5
 )
 formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
@@ -139,6 +139,8 @@ current_player = None
 last_assistant_response = ""
 current_speech_process = None  # Track the current speech subprocess
 listening_mode = False  # Track listening mode
+goodbye_detected = False
+last_interaction_time = time.time()
 
 # Load environment variables from .env file
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -156,6 +158,10 @@ recognizer = sr.Recognizer()
 
 assistant_name = "AO"
 output_file = "/home/ao/Desktop/AO/audio/output.mp3"
+
+# Define Backup and GitHub URLs
+BACKUP_SCRIPT_PATH = os.getenv("BACKUP_SCRIPT_PATH", "/home/ao/Desktop/AO/main_backup.py")
+GITHUB_RAW_URL = os.getenv("GITHUB_RAW_URL", "https://raw.githubusercontent.com/username/repo/main.py")
 
 google_api_key = os.getenv('GOOGLE_API_KEY')
 google_cse_id = os.getenv('GOOGLE_CSE_ID')
@@ -182,9 +188,8 @@ user_data = {
     'csv_file_path': None
 }
 
-last_interaction_time = time.time()
-goodbye_detected = False
 idle_time_threshold = 180
+goodbye_detected = False
 
 MAIN_SCRIPT_PATH = "/home/ao/Desktop/AO/main.py"
 self_knowledge = ""
@@ -307,6 +312,10 @@ def extract_user_name(text: str) -> Optional[str]:
             else:
                 return detected_name.capitalize()
     return None
+
+#===============================================
+# Unit 2 Xai, Email, Process 
+#===============================================
 
 def query_xai(question: str, additional_system_message: Optional[str] = None) -> str:
     global user_data
@@ -483,6 +492,10 @@ def recognize_and_identify_name(command: str) -> bool:
         return True
     return False
 
+#===============================================
+# Unit 3 Function Process
+#===============================================
+
 def parse_temperature(sensors_output: str) -> Optional[str]:
     try:
         for line in sensors_output.split('\n'):
@@ -616,7 +629,7 @@ def manage_process(action: str, script_path: str, process_name: str, duration: O
         global standby_mode
         try:
             standby_mode = True
-            speak(f" {action}.")
+            speak(f"{action}.")
             logger.info(f"Entering standby mode for {duration or 0} seconds during {action}")
 
             time.sleep(1)  # Short delay before starting the process
@@ -677,7 +690,7 @@ def handle_action(action: str, command: str) -> None:
     if action in SCAN_ACTIONS:
         script_path, process_name = SCAN_ACTIONS[action]
         standby_duration = 60 if action == "scan the area" else 18
-        manage_process(f" {action}", script_path, process_name, duration=standby_duration)
+        manage_process(f"{action}", script_path, process_name, duration=standby_duration)
         return
 
     if action in ["location data", "weather data"]:
@@ -690,12 +703,12 @@ def handle_action(action: str, command: str) -> None:
         script_path, stop_script = PROCESS_ACTIONS[action]
         if any(word in command for word in ["start", "activate"]):
             process_name = action.capitalize()
-            manage_process(f" {process_name}", script_path, stop_script)
+            manage_process(f"{action}", script_path, stop_script)
         elif any(word in command for word in ["stop", "deactivate"]):
             try:
                 subprocess.run(["pkill", "-f", stop_script], check=True)
                 process_state.unregister_process(action.capitalize())
-                speak(f" {action}.")
+                speak(f"{action}.")
                 logger.info(f"{action.capitalize()} stopped.")
             except subprocess.CalledProcessError:
                 speak(f"{action.capitalize()} is not running.")
@@ -783,11 +796,17 @@ def handle_action(action: str, command: str) -> None:
         speak(response)
         save_to_csv(command, response)
 
+#===============================================
+# Unit 3 Command Processing
+#===============================================
+
 def process_command(command: str) -> None:
-    global goodbye_detected, last_interaction_time
+    # Using global variables declared at the top of the script
 
     command = command.lower().strip()
     logger.info(f"Processing command: {command}")
+
+    global last_interaction_time, goodbye_detected
 
     last_interaction_time = time.time()
 
@@ -864,7 +883,7 @@ def process_command(command: str) -> None:
 
     if recognize_and_identify_name(command):
         return
-
+############# AO Skills ################
     command_actions = {
         "object detection": ["start object detection", "start object", "activate object detection", "activate object",
                              "stop object detection", "stop object", "deactivate object detection", "deactivate object"],
@@ -1006,6 +1025,10 @@ def health_check() -> bool:
         logger.error(f"Health check failed: {e}", exc_info=True)
         return False
 
+#===============================================
+# Unit 5 Utility, GUI, Main Functions
+#===============================================
+
 # Self-Update Functions
 
 def analyze_script(script_path: str) -> List[str]:
@@ -1063,7 +1086,7 @@ def update_dialog():
         speak("Would you like me to proceed with changes or modify my recommendations?")
         next_step = listen()
 
-        if "proceed" in next_step.lower():
+        if next_step and "proceed" in next_step.lower():
             summarize_and_update(user_request, related_functions)
         else:
             speak("Understood. Let me know if there's anything else.")
@@ -1082,7 +1105,7 @@ def summarize_and_update(user_request: str, related_functions: List[str]):
 
         speak("Should I apply these updates?")
         response = listen()
-        if "yes" in response.lower():
+        if response and "yes" in response.lower():
             apply_updates(recommendations)
         else:
             speak("Okay, I won't make any changes.")
@@ -1123,7 +1146,7 @@ def apply_updates(recommendations: str):
         logger.info("Applied updates based on user recommendations.")
         speak("Updates applied successfully. Would you like me to test them now?")
         response = listen()
-        if "yes" in response.lower():
+        if response and "yes" in response.lower():
             test_process = subprocess.run(
                 ["python3", MAIN_SCRIPT_PATH, "--test"],
                 capture_output=True,
@@ -1149,7 +1172,7 @@ def handle_update_command(command: str):
     """
     speak("How would you like me updated? I can fetch the latest version from GitHub or update based on your input.")
     response = listen()
-    if "github" in response.lower():
+    if response and "github" in response.lower():
         update_script_from_github()
     else:
         update_dialog()
@@ -1339,7 +1362,10 @@ def update_status():
         root.after(5000, update_status)
 
 def on_button_click(cmd: str):
-    process_command(cmd)
+    if cmd == "stop_talking":
+        stop_talking_and_listen()
+    else:
+        process_command(cmd)
 
 def on_enter_pressed(event):
     text = input_entry.get()
@@ -1436,7 +1462,7 @@ def create_gui_main_window():
         btn = tk.Button(
             button_frame, 
             text=label, 
-            command=lambda c=cmd: on_button_click(c) if c != "stop_talking" else stop_talking_and_listen(),
+            command=lambda c=cmd: on_button_click(c),
             fg='black', 
             bg='grey',
             width=20,  # Set a fixed width for consistency
@@ -1466,23 +1492,6 @@ def initialize_gui():
     create_gui_main_window()
     root.mainloop()
 
-if __name__ == "__main__":
-    main_thread = threading.Thread(target=main, daemon=True)
-    main_thread.start()
-
-    try:
-        initialize_gui()
-    except KeyboardInterrupt:
-        logger.info("KeyboardInterrupt received in GUI thread.")
-        cleanup_system()
-        sys.exit(0)
-    except Exception as e:
-        logger.critical(f"Critical error in GUI thread: {e}", exc_info=True)
-        cleanup_system()
-        sys.exit(1)
-
-# Self-Update Functions Continued
-
 def main() -> None:
     try:
         initialize_system()
@@ -1492,7 +1501,7 @@ def main() -> None:
             speak("Hello, I’m A O.")
 
         last_maintenance = time.time()
-        maintenance_interval = 300
+        maintenance_interval = 300  # 5 minutes
 
         global goodbye_detected, last_interaction_time
 
@@ -1500,25 +1509,30 @@ def main() -> None:
             try:
                 current_time = time.time()
 
+                # Perform maintenance periodically
                 if current_time - last_maintenance > maintenance_interval:
                     maintain_system()
                     last_maintenance = current_time
 
+                # Perform health checks
                 if not health_check():
                     logger.warning("Health check failed, attempting recovery...")
                     time.sleep(5)
                     continue
 
+                # Check for idle time and prompt user
                 if not goodbye_detected and user_data['user_name'] and (current_time - last_interaction_time > idle_time_threshold):
                     speak(f"{user_data['user_name']}, are you still there?")
                     last_interaction_time = time.time()
 
+                # Listen for commands
                 command = listen()
 
                 if not command:
                     time.sleep(0.1)
                     continue
 
+                # Handle goodbye detection
                 if goodbye_detected:
                     speak("Is that you, Aros?")
                     name_confirm = listen()
@@ -1530,17 +1544,29 @@ def main() -> None:
                         speak("I’ll assume it’s you, Aros.")
                     goodbye_detected = False
 
+                # Register and process commands
                 process_state.register_process("command_execution", {
                     "command": command,
                     "timestamp": time.time()
                 })
 
+                # Extract and update the user name if mentioned in the command
                 name_in_command = extract_user_name(command)
                 if name_in_command:
                     user_data['user_name'] = name_in_command
 
+                # Analyze the command and execute corresponding actions
+                if "update your script" in command:
+                    speak("How would you like me to be updated?")
+                    update_method = listen()
+                    if update_method:
+                        speak(f"You chose: {update_method}. Let me summarize my recommendation.")
+                        recommend_update_method(update_method)
+                        continue
+
                 process_command(command)
 
+                # Unregister command execution after completion
                 process_state.unregister_process("command_execution")
 
                 last_interaction_time = time.time()
@@ -1564,3 +1590,28 @@ def main() -> None:
         process_state.update_process_status("main_loop", "shutdown")
         logger.info("AO system shutdown complete")
         sys.exit(0)
+
+if __name__ == "__main__":
+    main_thread = threading.Thread(target=main, daemon=True)
+    main_thread.start()
+
+    try:
+        initialize_gui()
+    except KeyboardInterrupt:
+        logger.info("KeyboardInterrupt received in GUI thread.")
+        cleanup_system()
+        sys.exit(0)
+    except Exception as e:
+        logger.critical(f"Critical error in GUI thread: {e}", exc_info=True)
+        cleanup_system()
+        sys.exit(1)
+
+# Self-Update Functions Continued
+def recommend_update_method(method: str) -> None:
+    if "hourly time update" in method.lower():
+        speak("I recommend setting a timer to announce the time every hour.")
+    elif "on demand time update" in method.lower():
+        speak("I recommend enabling a feature where I announce the time only when asked.")
+    else:
+        speak("I will analyze my current capabilities to ensure your request is feasible.")
+        logger.info(f"Analyzing update method: {method}")
